@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -e
+
+mkdir -pv /tmp/php/sessions
+chown www-data:www-data -R /tmp/php/
+chown www-data:www-data -R ${CR_CADDY_WORK_DIR}
+
+mkdir -pv /tmp/fpm
+chown www-data:www-data -R /tmp/fpm
+ln -sf /dev/stderr /tmp/fpm/slow.log
+chown www-data:www-data /tmp/fpm/slow.log

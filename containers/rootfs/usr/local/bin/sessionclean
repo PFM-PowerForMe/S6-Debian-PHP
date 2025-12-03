@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -e
+
+#
+# sessionclean (Container Edition) - a script to cleanup stale PHP sessions
+#
+
+# 1. 动态获取 PHP 配置中的 session 存储路径和生命周期
+# 使用 php -r 直接读取当前生效的配置，避免硬编码
+SAVE_PATH=$(php -r 'echo ini_get("session.save_path");')
+MAX_LIFETIME=$(php -r 'echo ini_get("session.gc_maxlifetime");')
+
+# 容错处理：如果获取失败，使用我们之前脚本中设定的默认值
+[ -z "$SAVE_PATH" ] && SAVE_PATH="/tmp/php/sessions"
+[ -z "$MAX_LIFETIME" ] && MAX_LIFETIME=1440 # 默认 24 分钟 (1440秒)
+
+# 确保目录存在且是 files 模式才执行
+if [ ! -d "$SAVE_PATH" ]; then
+    exit 0
+fi
+
+# 将秒转换为分钟，供 find 命令的 -cmin 使用
+GC_MINS=$(( MAX_LIFETIME / 60 ))
+
+# 2. 保护正在被处理的活跃 session 文件
+# 找出所有运行中的 php-fpm 进程 (兼容常见命名)
+PIDS=$(pidof php-fpm 2>/dev/null || true)
+
+if [ -n "$PIDS" ]; then
+    for pid in $PIDS; do
+        # 如果 FPM 进程正在打开某个 session 文件，更新它的修改时间 (touch)，防止被误删
+        find "/proc/$pid/fd" -ignore_readdir_race -lname "$SAVE_PATH/sess_*" -exec touch -c {} \; 2>/dev/null || true
+    done
+fi
+
+# 3. 删除过期的 session 文件
+# 查找修改时间大于 GC_MINS 的文件并删除
+find -O3 "$SAVE_PATH/" -ignore_readdir_race -depth -mindepth 1 -name 'sess_*' -type f -cmin "+$GC_MINS" -delete
+
+# 记录日志 (可选，如果不希望产生日志可以注释掉)
+# echo "[$(date)] Cleaned stale sessions in $SAVE_PATH older than $GC_MINS minutes." > /dev/stderr
+
+exit 0

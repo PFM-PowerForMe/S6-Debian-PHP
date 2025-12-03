@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -e
+
+PHP_CONF="/usr/local/etc/php/conf.d/zzz-php.ini"
+FPM_CONF="/usr/local/etc/php-fpm.d/zzz-fpm.conf"
+
+FPM_PM="${CR_FPM_PM:-static}" 
+TOTAL_MEM="${CR_PHP_TOTAL_MEM:-512}"
+POST_MAX_SIZE="${CR_PHP_POST_MAX_SIZE:-1024M}"
+UPLOAD_MAX_FILESIZE="${CR_PHP_UPLOAD_MAX_FILESIZE:-1024M}"
+MAX_EXEC_TIME="${CR_PHP_MAX_EXECUTION_TIME:-300}"
+MAX_INPUT_TIME="${CR_PHP_MAX_INPUT_TIME:-300}"
+MAX_INPUT_VARS="${CR_PHP_MAX_INPUT_VARS:-9999}"
+OPCACHE_VALIDATE="${CR_PHP_OPCACHE_VALIDATE:-0}"
+
+# --- 核心计算 ---
+OPCACHE_MEM=$(( TOTAL_MEM / 8 ))
+[ "$OPCACHE_MEM" -lt 64 ] && OPCACHE_MEM=64
+[ "$OPCACHE_MEM" -gt 256 ] && OPCACHE_MEM=256
+
+OPCACHE_STR=$(( OPCACHE_MEM / 8 ))
+[ "$OPCACHE_STR" -lt 8 ] && OPCACHE_STR=8
+[ "$OPCACHE_STR" -gt 32 ] && OPCACHE_STR=32
+
+if [ "$TOTAL_MEM" -ge 1024 ]; then
+    JIT_MEM=$(( TOTAL_MEM / 16 ))
+    [ "$JIT_MEM" -gt 64 ] && JIT_MEM=64
+else
+    JIT_MEM=0
+fi
+
+REALPATH_CACHE=$(( TOTAL_MEM * 2 ))
+[ "$REALPATH_CACHE" -lt 256 ] && REALPATH_CACHE=256
+[ "$REALPATH_CACHE" -gt 4096 ] && REALPATH_CACHE=4096
+
+MEM_LIMIT=$(( TOTAL_MEM / 4 ))
+WORKER_SIZE=$(( 40 + (MEM_LIMIT / 8) ))
+EFFECTIVE_MEM=$(( TOTAL_MEM - OPCACHE_MEM - JIT_MEM ))
+
+MAX_CHILDREN=$(( EFFECTIVE_MEM / WORKER_SIZE ))
+[ "$MAX_CHILDREN" -lt 2 ] && MAX_CHILDREN=2
+
+if [ "$FPM_PM" = "dynamic" ]; then
+    MIN_SPARE=$(( MAX_CHILDREN / 4 ))
+    [ "$MIN_SPARE" -lt 1 ] && MIN_SPARE=1
+
+    MAX_SPARE=$(( MAX_CHILDREN / 2 ))
+    [ "$MAX_SPARE" -lt "$MIN_SPARE" ] && MAX_SPARE="$MIN_SPARE"
+    [ "$MAX_SPARE" -gt "$MAX_CHILDREN" ] && MAX_SPARE="$MAX_CHILDREN"
+
+    START_SERVERS=$(( MIN_SPARE + (MAX_SPARE - MIN_SPARE) / 2 ))
+fi
+
+MAX_REQUESTS=$(( (TOTAL_MEM / 100) * 100 ))
+[ "$MAX_REQUESTS" -lt 300 ] && MAX_REQUESTS=300
+[ "$MAX_REQUESTS" -gt 5000 ] && MAX_REQUESTS=5000
+
+# --- 写入 PHP 配置 ---
+cat <<EOF > "$PHP_CONF"
+[PHP]
+date.timezone = "Asia/Shanghai"
+error_log = "/dev/stderr"
+variables_order = "EGPCS"
+expose_php = Off
+display_errors = Off
+display_startup_errors = Off
+
+session.gc_probability = 0
+session.save_path = "/tmp/php/sessions"
+
+memory_limit = ${MEM_LIMIT}M
+post_max_size = ${POST_MAX_SIZE}
+upload_max_filesize = ${UPLOAD_MAX_FILESIZE}
+max_execution_time = ${MAX_EXEC_TIME}
+max_input_time = ${MAX_INPUT_TIME}
+max_input_vars = ${MAX_INPUT_VARS}
+realpath_cache_size = ${REALPATH_CACHE}K
+
+[opcache]
+opcache.enable = 1
+opcache.enable_cli = 1
+opcache.memory_consumption = ${OPCACHE_MEM}
+opcache.interned_strings_buffer = ${OPCACHE_STR}
+opcache.jit_buffer_size = ${JIT_MEM}M
+opcache.max_accelerated_files = 20000
+opcache.validate_timestamps = ${OPCACHE_VALIDATE}
+opcache.save_comments = 1
+EOF
+
+# --- 写入 FPM 配置 ---
+cat <<EOF > "$FPM_CONF"
+[global]
+daemonize = no
+error_log = /dev/stderr
+emergency_restart_threshold = 10
+emergency_restart_interval = 1m
+process_control_timeout = 10s
+log_limit = 4096
+
+[www]
+user = www-data
+group = www-data
+listen = /run/php-fpm.sock
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+listen.backlog = 4096
+listen.allowed_clients = 127.0.0.1
+
+ping.path = /ping
+pm.status_path = /status
+
+access.log = /dev/stdout
+decorate_workers_output = no
+catch_workers_output = yes
+clear_env = no
+
+request_terminate_timeout = 120s
+request_slowlog_timeout = 5s
+slowlog = /tmp/fpm/slow.log
+
+pm = ${FPM_PM}
+pm.max_children = ${MAX_CHILDREN}
+pm.max_requests = ${MAX_REQUESTS}
+EOF
+
+if [ "$FPM_PM" = "dynamic" ]; then
+    cat <<EOF >> "$FPM_CONF"
+pm.start_servers = ${START_SERVERS}
+pm.min_spare_servers = ${MIN_SPARE}
+pm.max_spare_servers = ${MAX_SPARE}
+EOF
+elif [ "$FPM_PM" = "ondemand" ]; then
+    cat <<EOF >> "$FPM_CONF"
+pm.process_idle_timeout = 10s
+EOF
+fi
+
+cat <<EOF >> "$FPM_CONF"
+
+php_admin_value[memory_limit] = ${MEM_LIMIT}M
+php_admin_value[max_execution_time] = ${MAX_EXEC_TIME}
+php_admin_value[max_input_time] = ${MAX_INPUT_TIME}
+php_admin_value[max_input_vars] = ${MAX_INPUT_VARS}
+EOF

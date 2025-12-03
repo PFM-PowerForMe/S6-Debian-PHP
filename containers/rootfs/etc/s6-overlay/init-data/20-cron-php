@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+cron_add root "09,39 * * * * /command/with-contenv /usr/local/bin/sessionclean"
