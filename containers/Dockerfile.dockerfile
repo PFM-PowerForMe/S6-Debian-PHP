@@ -121,6 +121,9 @@ COPY --from=s6 / /
 COPY --from=s6-debian /pfm /pfm
 COPY --from=s6-debian /etc/s6-overlay /etc/s6-overlay
 COPY --from=s6-debian /etc/sudoers.d /etc/sudoers.d
+# 工具
+COPY --from=ghcr.io/pfm-powerforme/cli-envsubst:latest / /
+COPY --from=ghcr.io/pfm-powerforme/cli-dasel:latest / /
 COPY --from=caddy / /
 COPY rootfs/ /
 RUN /pfm/bin/fpm_init && /pfm/bin/fpm_init install libfcgi-bin
