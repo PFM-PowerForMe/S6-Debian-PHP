@@ -131,5 +131,5 @@ RUN /pfm/bin/fix_env
 
 WORKDIR /var/www/
 VOLUME /var/www/
-EXPOSE 8080 8443
+EXPOSE 8080
 ENTRYPOINT ["/init"]
