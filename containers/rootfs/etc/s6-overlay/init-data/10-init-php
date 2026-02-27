@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
+PHP_VERSION="${PHP_VERSION:-8.2}"
+PHP_MAJOR_VERSION=$(echo "$PHP_VERSION" | cut -d. -f1)
+
 PHP_CONF="/usr/local/etc/php/conf.d/zzz-php.ini"
 FPM_CONF="/usr/local/etc/php-fpm.d/zzz-fpm.conf"
 
-FPM_PM="${CR_FPM_PM:-static}" 
+FPM_PM="${CR_FPM_PM:-dynamic}"
 TOTAL_MEM="${CR_PHP_TOTAL_MEM:-512}"
 POST_MAX_SIZE="${CR_PHP_POST_MAX_SIZE:-1024M}"
 UPLOAD_MAX_FILESIZE="${CR_PHP_UPLOAD_MAX_FILESIZE:-1024M}"
@@ -13,7 +16,10 @@ MAX_INPUT_TIME="${CR_PHP_MAX_INPUT_TIME:-300}"
 MAX_INPUT_VARS="${CR_PHP_MAX_INPUT_VARS:-9999}"
 OPCACHE_VALIDATE="${CR_PHP_OPCACHE_VALIDATE:-0}"
 
-# --- 核心计算 ---
+MEM_LIMIT=$(( TOTAL_MEM / 4 ))
+[ "$MEM_LIMIT" -lt 128 ] && MEM_LIMIT=128
+[ "$MEM_LIMIT" -gt 512 ] && MEM_LIMIT=512
+
 OPCACHE_MEM=$(( TOTAL_MEM / 8 ))
 [ "$OPCACHE_MEM" -lt 64 ] && OPCACHE_MEM=64
 [ "$OPCACHE_MEM" -gt 256 ] && OPCACHE_MEM=256
@@ -22,18 +28,16 @@ OPCACHE_STR=$(( OPCACHE_MEM / 8 ))
 [ "$OPCACHE_STR" -lt 8 ] && OPCACHE_STR=8
 [ "$OPCACHE_STR" -gt 32 ] && OPCACHE_STR=32
 
-if [ "$TOTAL_MEM" -ge 1024 ]; then
+JIT_MEM=0
+if [ "$PHP_MAJOR_VERSION" -ge 8 ] && [ "$TOTAL_MEM" -ge 1024 ]; then
     JIT_MEM=$(( TOTAL_MEM / 16 ))
     [ "$JIT_MEM" -gt 64 ] && JIT_MEM=64
-else
-    JIT_MEM=0
 fi
 
 REALPATH_CACHE=$(( TOTAL_MEM * 2 ))
 [ "$REALPATH_CACHE" -lt 256 ] && REALPATH_CACHE=256
 [ "$REALPATH_CACHE" -gt 4096 ] && REALPATH_CACHE=4096
 
-MEM_LIMIT=$(( TOTAL_MEM / 4 ))
 WORKER_SIZE=$(( 40 + (MEM_LIMIT / 8) ))
 EFFECTIVE_MEM=$(( TOTAL_MEM - OPCACHE_MEM - JIT_MEM ))
 
@@ -51,11 +55,11 @@ if [ "$FPM_PM" = "dynamic" ]; then
     START_SERVERS=$(( MIN_SPARE + (MAX_SPARE - MIN_SPARE) / 2 ))
 fi
 
-MAX_REQUESTS=$(( (TOTAL_MEM / 100) * 100 ))
-[ "$MAX_REQUESTS" -lt 300 ] && MAX_REQUESTS=300
-[ "$MAX_REQUESTS" -gt 5000 ] && MAX_REQUESTS=5000
+MAX_REQUESTS=1000
+[ "$TOTAL_MEM" -lt 512 ] && MAX_REQUESTS=500
 
-# --- 写入 PHP 配置 ---
+REQ_TERM_TIMEOUT=$(( MAX_EXEC_TIME + 10 ))
+
 cat <<EOF > "$PHP_CONF"
 [PHP]
 date.timezone = "Asia/Shanghai"
@@ -81,13 +85,24 @@ opcache.enable = 1
 opcache.enable_cli = 1
 opcache.memory_consumption = ${OPCACHE_MEM}
 opcache.interned_strings_buffer = ${OPCACHE_STR}
-opcache.jit_buffer_size = ${JIT_MEM}M
 opcache.max_accelerated_files = 20000
 opcache.validate_timestamps = ${OPCACHE_VALIDATE}
 opcache.save_comments = 1
 EOF
 
-# --- 写入 FPM 配置 ---
+if [ "$PHP_MAJOR_VERSION" -ge 8 ]; then
+    if [ "$JIT_MEM" -gt 0 ]; then
+        cat <<EOF >> "$PHP_CONF"
+opcache.jit = tracing
+opcache.jit_buffer_size = ${JIT_MEM}M
+EOF
+    else
+        cat <<EOF >> "$PHP_CONF"
+opcache.jit = disable
+EOF
+    fi
+fi
+
 cat <<EOF > "$FPM_CONF"
 [global]
 daemonize = no
@@ -115,7 +130,7 @@ decorate_workers_output = no
 catch_workers_output = yes
 clear_env = no
 
-request_terminate_timeout = 120s
+request_terminate_timeout = ${REQ_TERM_TIMEOUT}s
 request_slowlog_timeout = 5s
 slowlog = /tmp/fpm/slow.log
 
