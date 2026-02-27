@@ -27,7 +27,7 @@ jobs:
     with:
       build_pull_source: false
       build_use_tag: false
-      build_versions: '["8.5", "8.4", "8.2", "8.1", "8.0", "7.4"]'
+      build_versions: '["8.5", "8.4", "8.3", "8.2", "8.1", "8.0", "7.4"]'
       clean_keep_versions: 180
       build_checkout_ref: main
       dispatch_repos: '["PFM-PowerForMe/STD-WordPress", "PFM-PowerForMe/STD-LskyPro"]'
